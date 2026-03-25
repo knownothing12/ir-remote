@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>红外遥控控制端</title>
+    <style>
+        /* 简易样式，适配手机/电脑浏览器 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+        }
+        body {
+            padding: 20px;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 16px;
+            color: white;
+        }
+        .connected {
+            background-color: #28a745;
+        }
+        .disconnected {
+            background-color: #dc3545;
+        }
+        .btn-group {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 15px;
+            border: none;
+            border-radius: 8px;
+            background-color: #007bff;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .custom-cmd {
+            margin-bottom: 20px;
+        }
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .log {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            height: 200px;
+            overflow-y: auto;
+            font-size: 14px;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <!-- 连接状态显示 -->
+    <div class="status disconnected" id="status">未连接MQTT服务器</div>
+
+    <!-- 预设控制按钮 -->
+    <div class="btn-group">
+        <button onclick="sendCmd('11 66')">学习模式</button>
+        <button onclick="sendCmd('10 88')">保存1</button>
+        <button onclick="sendCmd('10 10')">一号按键</button>
+        <button onclick="sendCmd('20 88')">保存2</button>
+        <button onclick="sendCmd('20 20')">二号按键</button>
+        <button onclick="sendCmd('6666')">复位恢复</button>
+    </div>
+
+    <!-- 自定义指令输入 -->
+    <div class="custom-cmd">
+        <input type="text" id="customCmd" placeholder="输入自定义指令（如2266）">
+        <button onclick="sendCustomCmd()">发送自定义指令</button>
+    </div>
+
+    <!-- 日志显示 -->
+    <div class="log" id="log"></div>
+
+    <!-- 引入MQTT.js（CDN） -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <script>
+        // ===================== 配置项（修改为你的MQTT服务器） =====================
+        const MQTT_CONFIG = {
+            host: 'wss://broker.emqx.io:8084/mqtt', // EMQ X公共WebSocket地址（免费）
+            clientId: 'web_' + Math.random().toString(16).substr(2, 8), // 随机ClientID
+            username: '', // 公共服务器无需账号
+            password: '', // 公共服务器无需密码
+            publishTopic: 'contorl', // 发布主题（需与ESP8266订阅主题一致）
+            subscribeTopic: 'qian'    // 订阅主题（接收ESP8266上报状态）
+        };
+
+        // 全局变量
+        let client = null; // MQTT客户端对象
+        const statusDom = document.getElementById('status');
+        const logDom = document.getElementById('log');
+        const customCmdDom = document.getElementById('customCmd');
+
+        // ===================== 核心函数 =====================
+        // 1. 打印日志
+        function log(msg) {
+            const time = new Date().toLocaleTimeString();
+            logDom.innerHTML += `[${time}] ${msg}\n`;
+            logDom.scrollTop = logDom.scrollHeight; // 自动滚动到底部
+        }
+
+        // 2. 连接MQTT服务器
+        function connectMQTT() {
+            try {
+                // 创建MQTT客户端连接
+                client = mqtt.connect(MQTT_CONFIG.host, {
+                    clientId: MQTT_CONFIG.clientId,
+                    username: MQTT_CONFIG.username,
+                    password: MQTT_CONFIG.password,
+                    keepalive: 60, // 保活时间60秒
+                    clean: true    // 清除会话
+                });
+
+                // 连接成功回调
+                client.on('connect', () => {
+                    log('MQTT服务器连接成功');
+                    statusDom.className = 'status connected';
+                    statusDom.textContent = '已连接MQTT服务器';
+                    
+                    // 订阅状态主题（接收ESP8266上报的红外状态）
+                    client.subscribe(MQTT_CONFIG.subscribeTopic, (err) => {
+                        if (err) {
+                            log(`订阅主题失败：${err}`);
+                        } else {
+                            log(`已订阅状态主题：${MQTT_CONFIG.subscribeTopic}`);
+                        }
+                    });
+                });
+
+                // 接收MQTT消息（ESP8266上报的状态）
+                client.on('message', (topic, payload) => {
+                    log(`收到状态消息 [${topic}]：${payload.toString()}`);
+                });
+
+                // 连接断开回调
+                client.on('close', () => {
+                    log('MQTT连接已断开，5秒后自动重连...');
+                    statusDom.className = 'status disconnected';
+                    statusDom.textContent = '未连接MQTT服务器';
+                    // 自动重连
+                    setTimeout(connectMQTT, 5000);
+                });
+
+                // 连接错误回调
+                client.on('error', (err) => {
+                    log(`MQTT连接错误：${err}`);
+                    statusDom.className = 'status disconnected';
+                    statusDom.textContent = '未连接MQTT服务器';
+                });
+            } catch (err) {
+                log(`MQTT连接异常：${err}`);
+                statusDom.className = 'status disconnected';
+                statusDom.textContent = '未连接MQTT服务器';
+            }
+        }
+
+        // 3. 发送预设指令
+        function sendCmd(cmd) {
+            if (!client || !client.connected) {
+                log('MQTT未连接，发送指令失败');
+                alert('MQTT未连接，请等待连接成功后再试！');
+                return;
+            }
+            // 发布指令到MQTT主题
+            client.publish(MQTT_CONFIG.publishTopic, cmd, (err) => {
+                if (err) {
+                    log(`发送指令失败 [${cmd}]：${err}`);
+                    alert(`发送失败：${err}`);
+                } else {
+                    log(`发送指令成功 [${cmd}]`);
+                }
+            });
+        }
+
+        // 4. 发送自定义指令
+        function sendCustomCmd() {
+            const cmd = customCmdDom.value.trim();
+            if (!cmd) {
+                alert('请输入自定义指令！');
+                return;
+            }
+            sendCmd(cmd);
+            customCmdDom.value = ''; // 清空输入框
+        }
+
+        // ===================== 页面加载时初始化 =====================
+        window.onload = () => {
+            log('初始化中，正在连接MQTT服务器...');
+            connectMQTT();
+
+            // 页面关闭时断开连接
+            window.onbeforeunload = () => {
+                if (client) {
+                    client.end();
+                    log('MQTT连接已断开');
+                }
+            };
+        };
+    </script>
+</body>
+</html>
